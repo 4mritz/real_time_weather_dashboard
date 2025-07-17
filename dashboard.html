@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Real-Time Weather Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/moment@2.29.4/moment.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-moment@1.0.0"></script>
+  <style>
+    body {
+      font-family: 'Segoe UI', sans-serif;
+      background: #f2f4f8;
+      margin: 0;
+      padding: 2rem;
+      color: #222;
+    }
+    .dashboard-header {
+      text-align: center;
+      margin-bottom: 2rem;
+    }
+    .cards-container {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1rem;
+      justify-content: center;
+      margin-bottom: 3rem;
+    }
+    .card {
+      background: #fff;
+      border-radius: 14px;
+      box-shadow: 0 4px 10px rgba(0,0,0,0.05);
+      padding: 1rem 1.5rem;
+      width: 270px;
+    }
+    .card h3 {
+      margin: 0;
+      font-size: 1.1rem;
+      color: #444;
+    }
+    .card .value {
+      font-size: 1.9rem;
+      font-weight: bold;
+      margin-top: 0.5rem;
+    }
+    .card .details {
+      font-size: 0.9rem;
+      margin-top: 0.5rem;
+      color: #666;
+    }
+    .chart-section {
+      margin-bottom: 3rem;
+    }
+    .chart-title {
+      font-size: 1.2rem;
+      margin: 1rem 0;
+      text-align: center;
+      color: #333;
+    }
+    .chart-box {
+      background: #fff;
+      border-radius: 16px;
+      box-shadow: 0 3px 8px rgba(0,0,0,0.1);
+      padding: 2rem;
+      max-width: 100%;
+    }
+    canvas {
+      width: 100% !important;
+      height: 400px !important;
+    }
+    .timestamp {
+      text-align: center;
+      font-size: 0.95rem;
+      color: #444;
+      margin-top: 1rem;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="dashboard-header">
+    <h1>Real-Time Weather Dashboard</h1>
+    <div class="timestamp" id="currentDateTime">Loading date...</div>
+    <div class="timestamp" id="lastUpdated">Last Updated: --</div>
+  </div>
+
+  <div class="cards-container" id="summaryCards"></div>
+  <div id="chartsSection"></div>
+
+  <script>
+    const parameters = [
+      "pm1_value", "pm2_value", "pm3_value",
+      "pm4_value", "pm5_value", "pm6_value", "pm7_value"
+    ];
+
+    const parameterLabels = {
+      "pm1_value": "Temperature",
+      "pm2_value": "Humidity",
+      "pm3_value": "Solar Radiation",
+      "pm4_value": "Wind Speed",
+      "pm5_value": "Wind Direction",
+      "pm6_value": "Rain",
+      "pm7_value": "Atmospheric Pressure"
+    };
+
+    const parameterUnits = {
+      "pm1_value": "°C",
+      "pm2_value": "%",
+      "pm3_value": "W/m²",
+      "pm4_value": "m/s",
+      "pm5_value": "°",
+      "pm6_value": "mm",
+      "pm7_value": "hPa"
+    };
+
+    const deviceId = "AITWSSLDJ6"; // replace with your device ID or dynamic input
+
+    async function fetchData() {
+      const res = await fetch(`fetch_device_data.php?device_id=${deviceId}`);
+      const json = await res.json();
+
+      if (!json.success) {
+        alert("Failed to fetch data.");
+        return;
+      }
+
+      let rawData = json.data.device_data.map(r => {
+        r.timestamp = new Date(r.timestamp);
+        return r;
+      });
+
+      rawData.sort((a, b) => a.timestamp - b.timestamp);
+
+      const latest = rawData.at(-1)?.timestamp;
+      if (!latest) return;
+
+      // Hour bins from latest hour - 23 hours, hourly steps
+      const endHour = new Date(latest);
+      endHour.setMinutes(0, 0, 0);
+
+      const startHour = new Date(endHour.getTime() - 23 * 3600000); // 24 hourly bins
+
+      // Prepare hourly bins (24 hours)
+      const hourlyBins = [];
+      const labels = [];
+      for (let i = 0; i < 24; i++) {
+        const binStart = new Date(startHour.getTime() + i * 3600000);
+        const binEnd = new Date(binStart.getTime() + 3600000);
+        hourlyBins.push({ start: binStart, end: binEnd });
+        const hh = binStart.getHours().toString().padStart(2, '0');
+        labels.push(`${hh}:00`);
+      }
+
+      // Compute hourly averages per parameter
+      const finalData = {};
+      parameters.forEach(p => {
+        finalData[p] = hourlyBins.map(bin => {
+          const values = rawData.filter(d => d.timestamp >= bin.start && d.timestamp < bin.end)
+                                .map(d => parseFloat(d[p]))
+                                .filter(v => !isNaN(v));
+          if (!values.length) return null;
+          return +(values.reduce((a, b) => a + b, 0) / values.length).toFixed(2);
+        });
+      });
+
+      // Keep all 24 hourly labels as is (e.g. 10:00, 11:00, 12:00, ...)
+
+// Add latest time label (e.g. "11:30") as an extra label at the end
+const latestTimeLabel = latest.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+labels.push(latestTimeLabel);
+
+// Add null value to datasets for the latest time except for the latest hour bin,
+// so the line extends to that latest timestamp position
+parameters.forEach(p => {
+  finalData[p].push(latestVal = rawData.at(-1)[p] !== null ? +parseFloat(rawData.at(-1)[p]).toFixed(2) : null);
+});
+
+
+      // Show summary cards
+      const cardsContainer = document.getElementById("summaryCards");
+      cardsContainer.innerHTML = "";
+      parameters.forEach(p => {
+        const values = finalData[p].filter(v => v !== null);
+        const current = values.at(-1) ?? "N/A";
+        const max = values.length ? Math.max(...values) : "N/A";
+        const min = values.length ? Math.min(...values) : "N/A";
+        const avg = values.length ? (values.reduce((a, b) => a + b, 0) / values.length).toFixed(2) : "N/A";
+
+        const card = document.createElement("div");
+        card.className = "card";
+        card.innerHTML = `
+          <h3>${parameterLabels[p]}</h3>
+          <div class="value">${current} ${parameterUnits[p]}</div>
+          <div class="details">
+            ↑ Max: ${max} ${parameterUnits[p]}<br>
+            ↓ Min: ${min} ${parameterUnits[p]}<br>
+            ∅ Avg: ${avg} ${parameterUnits[p]}
+          </div>
+        `;
+        cardsContainer.appendChild(card);
+      });
+
+      // Create charts
+      const chartsSection = document.getElementById("chartsSection");
+      chartsSection.innerHTML = "";
+
+      parameters.forEach(p => {
+        const chartSection = document.createElement("div");
+        chartSection.className = "chart-section";
+
+        const title = document.createElement("div");
+        title.className = "chart-title";
+        title.innerText = `${parameterLabels[p]} - Last 24 Hours`;
+
+        const chartBox = document.createElement("div");
+        chartBox.className = "chart-box";
+
+        const canvas = document.createElement("canvas");
+        canvas.id = `chart-${p}`;
+
+        chartBox.appendChild(canvas);
+        chartSection.appendChild(title);
+        chartSection.appendChild(chartBox);
+        chartsSection.appendChild(chartSection);
+
+        new Chart(canvas, {
+          type: 'line',
+          data: {
+            labels: labels,
+            datasets: [{
+              label: `${parameterLabels[p]}`,
+              data: finalData[p],
+              borderColor: '#2563eb',
+              backgroundColor: 'rgba(37, 99, 235, 0.1)',
+              fill: true,
+              tension: 0.4,
+              pointRadius: 3,
+              pointHoverRadius: 6,
+            }]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            interaction: {
+              mode: 'nearest',
+              axis: 'x',
+              intersect: false
+            },
+            plugins: {
+              tooltip: {
+                enabled: true,
+                callbacks: {
+                  label: ctx => `${parameterLabels[p]}: ${ctx.formattedValue} ${parameterUnits[p]}`
+                }
+              },
+              legend: { display: false }
+            },
+            scales: {
+  x: {
+    title: { display: true, text: 'Hour (Last 24h)' },
+    ticks: {
+      callback: function(value, index, ticks) {
+        // value here is a label string like "10:09" or "10:00"
+        // Show label only if minutes === "00"
+        const label = this.getLabelForValue(value);
+        // label is like "HH:mm"
+        if (label.endsWith(":00")) {
+          return label;
+        } else {
+          return '';  // skip non-full hour labels
+        }
+      }
+    }
+  },
+  y: {
+    beginAtZero: true,
+    title: { display: true, text: parameterLabels[p] }
+  }
+}
+
+          }
+        });
+      });
+
+      // Show current date/time and last updated time
+      document.getElementById("currentDateTime").textContent =
+        new Date().toLocaleString('en-GB', {
+          weekday: 'long', day: '2-digit', month: 'short', year: 'numeric',
+          hour: '2-digit', minute: '2-digit', hour12: true
+        });
+
+      document.getElementById("lastUpdated").textContent =
+        "Last Updated: " + latest.toLocaleString('en-GB', {
+          weekday: 'short', day: '2-digit', month: 'short', year: 'numeric',
+          hour: '2-digit', minute: '2-digit', hour12: true
+        });
+    }
+
+    fetchData();
+  </script>
+
+</body>
+</html>
